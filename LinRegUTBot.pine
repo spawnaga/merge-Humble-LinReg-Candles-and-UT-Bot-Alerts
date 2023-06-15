@@ -1,0 +1,101 @@
+//@version=5
+indicator(title='merge Humble LinReg Candles and UT Bot Alerts', shorttitle='LinRegUT Bot', format=format.price, precision=4, overlay=true)
+import TradingView/ta/5
+// time input for the strategy
+sessionTime = input("0000-2359", "Session Time")
+// LinReg Inputs
+signal_length = input.int(title='Signal Smoothing', minval=1, maxval=200, defval=7)
+sma_signal = input(title='Exponential MA (Signal Line)', defval=true)
+
+// UT Bot Inputs
+
+a = input(2, title='Key Vaule. \'This changes the sensitivity\'')
+c = input(11, title='ATR Period')
+h = input(false, title='Signals from Heikin Ashi Candles')
+
+
+lin_reg = input(title='Lin Reg', defval=true)
+linreg_length = input.int(title='Linear Regression Length', minval=1, maxval=200, defval=11)
+
+// LinReg Calculations:
+bopen = lin_reg ? ta.linreg(open, linreg_length, 0) : open
+bhigh = lin_reg ? ta.linreg(high, linreg_length, 0) : high
+blow = lin_reg ? ta.linreg(low, linreg_length, 0) : low
+bclose = lin_reg ? ta.linreg(close, linreg_length, 0) : close
+
+r = bopen < bclose
+
+signal = sma_signal ? ta.ema(bclose, signal_length) : ta.ema(bclose, signal_length)
+
+
+// UT Bot Calculations
+xATR = ta.atr(c)
+nLoss = a * xATR
+
+src = h ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, bclose, lookahead=barmerge.lookahead_off) : bclose
+
+xATRTrailingStop = 0.0
+iff_1 = src > nz(xATRTrailingStop[1], 0) ? src - nLoss : src + nLoss
+iff_2 = src < nz(xATRTrailingStop[1], 0) and src[1] < nz(xATRTrailingStop[1], 0) ? math.min(nz(xATRTrailingStop[1]), src + nLoss) : iff_1
+xATRTrailingStop := src > nz(xATRTrailingStop[1], 0) and src[1] > nz(xATRTrailingStop[1], 0) ? math.max(nz(xATRTrailingStop[1]), src - nLoss) : iff_2
+
+pos = 0
+iff_3 = src[1] > nz(xATRTrailingStop[1], 0) and src < nz(xATRTrailingStop[1], 0) ? -1 : nz(pos[1], 0)
+pos := src[1] < nz(xATRTrailingStop[1], 0) and src > nz(xATRTrailingStop[1], 0) ? 1 : iff_3
+
+xcolor = pos == -1 ? color.red : pos == 1 ? color.green : color.blue
+
+ema = ta.ema(src, 1)
+above = ta.crossover(ema, xATRTrailingStop)
+below = ta.crossover(xATRTrailingStop, ema)
+
+buy = src > xATRTrailingStop and above
+sell = src < xATRTrailingStop and below
+
+barbuy = src > xATRTrailingStop
+barsell = src < xATRTrailingStop
+
+// LinReg plots
+plotcandle(r ? bopen : na, r ? bhigh : na, r ? blow : na, r ? bclose : na, title='LinReg Candles', color=color.green, wickcolor=color.green, bordercolor=color.green, editable=true)
+plotcandle(r ? na : bopen, r ? na : bhigh, r ? na : blow, r ? na : bclose, title='LinReg Candles', color=color.red, wickcolor=color.red, bordercolor=color.red, editable=true)
+
+var isLong = false
+var isShort = false
+
+t = time("D", sessionTime)
+// Combine the conditions
+buySignal = not isLong and r and (bclose - bopen ) > math.abs(math.avg(bclose - bopen, 3)) and t//and volume > ta.ema(volume, 50)
+sellSignal = not isShort and not r and (bopen - bclose) > -1 * math.abs(math.avg(bopen - bclose, 3)) and t //and volume > ta.ema(volume, 50)
+exitLong = sell and not t and isLong
+exitShort = buy and not t and isShort
+
+if buySignal
+    // A new buy signal has been encountered. Reset the bar size.
+    isLong := true
+    isShort := false
+
+else if sellSignal
+    // A new sell signal has been encountered. Reset the bar size.
+    isLong := false
+    isShort := true
+
+if (exitLong)
+    // Exiting a long position. Reset the bar size and state variables.
+    isLong := false
+    isShort := false
+
+if (exitShort)
+    // Exiting a short position. Reset the bar size and state variables.
+    isShort := false
+    isLong := false
+
+// UT Bot plots
+plotshape(buySignal, title='Buy', text='Buy', style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.new(color.white, 0), size=size.tiny)
+plotshape(sellSignal, title='Sell', text='Sell', style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.new(color.white, 0), size=size.tiny)
+plotshape(series=exitLong, title="Short Exit", text="Stop", style=shape.labeldown, color=color.green, location=location.abovebar)
+plotshape(series=exitShort, title="Long Exit", text="Stop", style=shape.labelup, color=color.red, location=location.belowbar)
+
+alertcondition(condition = buySignal and t, title='Go Long', message='{"message":"EntryLong","symbol":"{{ticker}}","price":"{{close}}"}')
+alertcondition(condition = sellSignal and t, title='Go Short', message='{"message":"EntryShort","symbol":"{{ticker}}","price":"{{close}}"}')
+alertcondition(condition = exitLong and t, title='Exit Long', message = '{"message":"CloseLong","symbol":"{{ticker}}","price":"{{close}}"}')
+alertcondition(condition = exitShort and t, title='Exit Short', message='{"message":"CloseShort","symbol":"{{ticker}}","price":"{{close}}"}')
